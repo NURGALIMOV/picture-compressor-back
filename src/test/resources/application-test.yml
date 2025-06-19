@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: picture-compressor
+  webflux:
+    multipart:
+      max-in-memory-size: 200MB
+      max-headers-size: 1MB
+      max-disk-usage-per-part: 200MB
+      max-parts: 10
+  # CORS configuration
+  cors:
+    allowed-origins: "*"
+    allowed-methods: "*"
+    allowed-headers: "*"
+    exposed-headers: "*"
+    allow-credentials: false
+    max-age: 3600
+
+server:
+  port: 8080
+  max-http-request-header-size: 1MB
+
+# Rate limiting configuration
+rate-limiting:
+  requests-per-minute: 10
+
+# GIF compression configuration
+gif-compression:
+  max-file-size: 209715200  # 200MB in bytes
