@@ -1,5 +1,8 @@
 package com.example.picturecompressor.exception;
 
+import io.github.resilience4j.bulkhead.BulkheadFullException;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.ratelimiter.RequestNotPermitted;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -38,6 +41,42 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiError> handleRateLimitExceededException(RateLimitExceededException ex, ServerWebExchange exchange) {
         log.error("Rate limit exceeded: {}", ex.getMessage());
         return createErrorResponse(ex, exchange, HttpStatus.TOO_MANY_REQUESTS);
+    }
+    
+    @ExceptionHandler(InsufficientResourcesException.class)
+    public ResponseEntity<ApiError> handleInsufficientResourcesException(InsufficientResourcesException ex, ServerWebExchange exchange) {
+        log.error("Insufficient resources: {}", ex.getMessage());
+        return createErrorResponse(ex, exchange, HttpStatus.SERVICE_UNAVAILABLE);
+    }
+    
+    @ExceptionHandler(CallNotPermittedException.class)
+    public ResponseEntity<ApiError> handleCircuitBreakerException(CallNotPermittedException ex, ServerWebExchange exchange) {
+        log.error("Circuit breaker open: {}", ex.getMessage());
+        return createErrorResponse(
+            new InsufficientResourcesException("Service temporarily unavailable due to high load. Please try again later."),
+            exchange, 
+            HttpStatus.SERVICE_UNAVAILABLE
+        );
+    }
+    
+    @ExceptionHandler(BulkheadFullException.class)
+    public ResponseEntity<ApiError> handleBulkheadFullException(BulkheadFullException ex, ServerWebExchange exchange) {
+        log.error("Bulkhead full: {}", ex.getMessage());
+        return createErrorResponse(
+            new InsufficientResourcesException("Service is processing too many requests. Please try again later."),
+            exchange, 
+            HttpStatus.TOO_MANY_REQUESTS
+        );
+    }
+    
+    @ExceptionHandler(RequestNotPermitted.class)
+    public ResponseEntity<ApiError> handleRequestNotPermittedException(RequestNotPermitted ex, ServerWebExchange exchange) {
+        log.error("Request not permitted: {}", ex.getMessage());
+        return createErrorResponse(
+            new RateLimitExceededException("Too many requests. Please try again later."),
+            exchange, 
+            HttpStatus.TOO_MANY_REQUESTS
+        );
     }
 
     @ExceptionHandler(Exception.class)

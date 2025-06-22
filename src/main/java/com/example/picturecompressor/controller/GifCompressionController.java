@@ -96,7 +96,7 @@ public class GifCompressionController {
      * @return The rate limit bucket for the client
      */
     private Bucket getRateLimitBucket(String clientIdentifier) {
-        log.info("Getting rate limit bucket for client: {}", clientIdentifier);
+        log.debug("Getting rate limit bucket for client: {}", clientIdentifier);
         return buckets.computeIfAbsent(clientIdentifier, id -> rateLimitConfig.createNewBucket());
     }
 

@@ -15,8 +15,8 @@ RUN mvn clean package
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
-# Set memory limits for JVM
-ENV JAVA_OPTS="-Xms256m -Xmx512m"
+# Set memory limits and GC settings for JVM
+ENV JAVA_OPTS="-Xms256m -Xmx512m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=200"
 
 # Create non-root user for security
 RUN addgroup --system appuser && adduser --system --ingroup appuser appuser

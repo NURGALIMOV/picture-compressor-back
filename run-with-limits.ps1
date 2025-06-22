@@ -13,9 +13,15 @@ if ($javaPids) {
     }
 }
 
-# Start the application with memory constraints
-$env:JAVA_OPTS = "-Xmx$maxRam -Xms$maxRam"
+# Start the application with memory constraints and GC settings
+$env:JAVA_OPTS = "-Xmx$maxRam -Xms$maxRam -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=./logs -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=200"
 Write-Host "Java options set: $env:JAVA_OPTS"
+
+# Create logs directory if it doesn't exist
+if (!(Test-Path -Path "./logs")) {
+    New-Item -ItemType Directory -Path "./logs" | Out-Null
+    Write-Host "Created logs directory for heap dumps"
+}
 
 # Run the application
 Write-Host "Starting Spring Boot application..."

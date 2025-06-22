@@ -1,7 +1,14 @@
 package com.example.picturecompressor.service;
 
+import com.example.picturecompressor.config.HealthConfig;
 import com.example.picturecompressor.exception.FileSizeLimitExceededException;
+import com.example.picturecompressor.exception.InsufficientResourcesException;
 import com.example.picturecompressor.exception.ProcessingException;
+import io.github.resilience4j.bulkhead.annotation.Bulkhead;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.reactor.bulkhead.operator.BulkheadOperator;
+import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
+import io.github.resilience4j.reactor.ratelimiter.operator.RateLimiterOperator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -11,9 +18,13 @@ import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -24,11 +35,23 @@ import java.util.concurrent.atomic.AtomicLong;
 @RequiredArgsConstructor
 public class GifCompressionService {
 
+    private static final String COMPRESSION_SERVICE = "compressionService";
     private final ReactiveGifProcessor gifProcessor;
     private final ReactiveZipCreator zipCreator;
     
+    // Resilience4j operators
+    private final CircuitBreakerOperator<byte[]> circuitBreakerOperator;
+    private final BulkheadOperator<byte[]> bulkheadOperator;
+    private final RateLimiterOperator<byte[]> rateLimiterOperator;
+    
     @Value("${gif-compression.max-file-size}")
     private long maxFileSize;
+    
+    @Value("${gif-compression.max-memory-percent:80}")
+    private int maxMemoryPercent;
+    
+    @Value("${gif-compression.estimated-memory-factor:3.5}")
+    private float estimatedMemoryFactor;
 
     /**
      * Compresses a single GIF file with the specified compression level
@@ -37,15 +60,31 @@ public class GifCompressionService {
      * @param compressionLevel The compression level (0 - 1)
      * @return A Mono containing the compressed GIF file as a byte array
      */
+    @CircuitBreaker(name = COMPRESSION_SERVICE, fallbackMethod = "compressGifFallback")
+    @Bulkhead(name = COMPRESSION_SERVICE, fallbackMethod = "compressGifFallback")
     public Mono<byte[]> compressGif(FilePart filePart, float compressionLevel) {
         return GifCompressionValidationService.validateCompressionRequest(filePart, compressionLevel)
+                .then(checkSystemResources())
                 .then(collectFileContent(filePart))
                 .doFirst(() -> log.info("Started compressing GIF file: {}", filePart.filename()))
+                .flatMap(bytes -> checkMemoryForProcessing(bytes).then(Mono.just(bytes)))
                 .flatMap(bytes -> gifProcessor.compressGifParallel(bytes, compressionLevel))
                 .doOnError(e -> log.error("Error compressing GIF file: {}", filePart.filename(), e))
                 .doOnSuccess(
                         result -> log.info("Successfully compressed GIF file: {}, output size: {} bytes", filePart.filename(), result.length)
-                );
+                )
+                .transform(circuitBreakerOperator)
+                .transform(bulkheadOperator)
+                .transform(rateLimiterOperator)
+                .onErrorMap(this::mapResourceErrors);
+    }
+
+    /**
+     * Fallback method for compressGif when circuit breaker opens or bulkhead rejects
+     */
+    private Mono<byte[]> compressGifFallback(FilePart filePart, float compressionLevel, Exception e) {
+        log.warn("Compression fallback triggered for file: {}, reason: {}", filePart.filename(), e.getMessage());
+        return Mono.error(new InsufficientResourcesException("Service temporarily unavailable due to high load. Please try again later.", e));
     }
 
     /**
@@ -55,13 +94,36 @@ public class GifCompressionService {
      * @param compressionLevel The compression level (0-1)
      * @return A Mono containing the compressed GIF files in a ZIP archive as a byte array
      */
+    @CircuitBreaker(name = COMPRESSION_SERVICE, fallbackMethod = "compressBatchFallback")
+    @Bulkhead(name = COMPRESSION_SERVICE, fallbackMethod = "compressBatchFallback")
     public Mono<byte[]> compressGifBatch(Flux<FilePart> files, float compressionLevel) {
         return GifCompressionValidationService.validateCompressionLevelReactive(compressionLevel)
+                .then(checkSystemResources())
                 .then(processFiles(files))
+                .flatMap(fileDataList -> checkTotalMemoryRequirements(fileDataList).thenReturn(fileDataList))
                 .flatMap(fileDataList -> compressFiles(fileDataList, compressionLevel))
                 .flatMap(this::createZipArchive)
                 .doOnError(e -> log.error("Error in batch compression of GIF files", e))
-                .doOnSuccess(result -> log.info("Finished batch compression of GIF files, output size: {} bytes", result.length));
+                .doOnSuccess(result -> log.info("Finished batch compression of GIF files, output size: {} bytes", result.length))
+                .transform(circuitBreakerOperator)
+                .transform(bulkheadOperator)
+                .transform(rateLimiterOperator)
+                .onErrorMap(this::mapResourceErrors);
+    }
+    
+    /**
+     * Fallback method for compressBatch when circuit breaker opens or bulkhead rejects
+     */
+    private Mono<byte[]> compressBatchFallback(Flux<FilePart> files, float compressionLevel, Exception e) {
+        log.warn("Batch compression fallback triggered, reason: {}", e.getMessage());
+        return Mono.error(new InsufficientResourcesException("Service temporarily unavailable due to high load. Please try again later.", e));
+    }
+    
+    /**
+     * Map resource-related errors to more specific exceptions
+     */
+    private Throwable mapResourceErrors(Throwable e) {
+        return e;
     }
 
     /**
@@ -146,30 +208,31 @@ public class GifCompressionService {
      */
     private Mono<byte[]> collectFileContent(FilePart filePart) {
         final AtomicLong size = new AtomicLong(0);
-        return DataBufferUtils.join(filePart.content()).flatMap(dataBuffer -> {
-            try (DataBuffer.ByteBufferIterator iterator = dataBuffer.readableByteBuffers()) {
-                List<ByteBuffer> buffers = new ArrayList<>();
-                iterator.forEachRemaining(buffer -> buffers.add(buffer.duplicate()));
-                ByteBuffer[] byteBuffers = buffers.toArray(ByteBuffer[]::new);
+        return DataBufferUtils.join(filePart.content())
+                .flatMap(dataBuffer -> {
+                    try (DataBuffer.ByteBufferIterator iterator = dataBuffer.readableByteBuffers()) {
+                        List<ByteBuffer> buffers = new ArrayList<>();
+                        iterator.forEachRemaining(buffer -> buffers.add(buffer.duplicate()));
+                        ByteBuffer[] byteBuffers = buffers.toArray(ByteBuffer[]::new);
 
-                int totalBytes = Arrays.stream(byteBuffers).mapToInt(ByteBuffer::remaining).sum();
-                byte[] bytes = new byte[totalBytes];
-                
-                int offset = 0;
-                for (ByteBuffer byteBuffer : byteBuffers) {
-                    int length = byteBuffer.remaining();
-                    byteBuffer.get(bytes, offset, length);
-                    offset += length;
-                }
-                
-                long fileSize = size.addAndGet(bytes.length);
-                if (fileSize > maxFileSize) {
-                    return Mono.error(new FileSizeLimitExceededException("File size exceeds the maximum allowed size of " + maxFileSize + " bytes"));
-                }
-                return Mono.just(bytes);
-            } finally {
-                DataBufferUtils.release(dataBuffer);
-            }
+                        int totalBytes = Arrays.stream(byteBuffers).mapToInt(ByteBuffer::remaining).sum();
+                        byte[] bytes = new byte[totalBytes];
+
+                        int offset = 0;
+                        for (ByteBuffer byteBuffer : byteBuffers) {
+                            int length = byteBuffer.remaining();
+                            byteBuffer.get(bytes, offset, length);
+                            offset += length;
+                        }
+
+                        long fileSize = size.addAndGet(bytes.length);
+                        if (fileSize > maxFileSize) {
+                            return Mono.error(new FileSizeLimitExceededException("File size exceeds the maximum allowed size of " + maxFileSize + " bytes"));
+                        }
+                        return Mono.just(bytes);
+                    } finally {
+                        DataBufferUtils.release(dataBuffer);
+                    }
         });
     }
 
@@ -200,5 +263,81 @@ public class GifCompressionService {
                     ", data=" + Arrays.toString(data) +
                     '}';
         }
+    }
+
+    /**
+     * Проверяет доступные системные ресурсы перед обработкой
+     * @return Mono<Void> завершающийся успешно, если ресурсов достаточно, или с ошибкой, если нет
+     */
+    private Mono<Void> checkSystemResources() {
+        return Mono.fromCallable(() -> {
+            Runtime runtime = Runtime.getRuntime();
+            long maxMem = runtime.maxMemory();
+            long freeMem = runtime.freeMemory();
+            long totalMem = runtime.totalMemory();
+            
+            // Доступная память = максимальная - (используемая - свободная)
+            long availableMem = maxMem - (totalMem - freeMem);
+            int usedMemoryPercent = (int) ((maxMem - availableMem) / maxMem * 100);
+            
+            log.debug("Memory status: used={}%, available={}MB, max={}MB", 
+                usedMemoryPercent, availableMem / HealthConfig.MB_DIVISOR, maxMem / HealthConfig.MB_DIVISOR);
+                
+            if (usedMemoryPercent > maxMemoryPercent) {
+                log.warn("Low memory resources detected: {}% used (threshold: {}%)", usedMemoryPercent, maxMemoryPercent);
+                return new InsufficientResourcesException("Service is low on memory resources. Please try again later.");
+            }
+            return null;
+        })
+        .flatMap(exception -> Objects.isNull(exception) ? Mono.<Void>empty() : Mono.error(exception))
+        .subscribeOn(Schedulers.boundedElastic());
+    }
+    
+    /**
+     * Оценивает, хватит ли памяти для обработки данного GIF-файла
+     * Коэффициент 3.5 основан на том, что декодированное изображение требует примерно в 3-4 раза
+     * больше памяти, чем исходный файл (в зависимости от формата и сжатия)
+     */
+    private Mono<Void> checkMemoryForProcessing(byte[] fileBytes) {
+        return Mono.fromCallable(() -> {
+            long estimatedMemoryRequired = (long)(fileBytes.length * estimatedMemoryFactor);
+            Runtime runtime = Runtime.getRuntime();
+            long availableMem = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
+            // Проверяем, что у нас есть достаточно памяти для обработки файла
+            // с учетом запаса в 20% для других операций
+            if (estimatedMemoryRequired > availableMem * 0.8) {
+                log.warn("Insufficient memory to safely process file: need ~{}MB, available {}MB", 
+                    estimatedMemoryRequired / HealthConfig.MB_DIVISOR, availableMem / HealthConfig.MB_DIVISOR);
+                return new InsufficientResourcesException(
+                    "File is too large to process with current system resources. Try again with a smaller file or when system has more available memory.");
+            }
+            return null;
+        })
+        .flatMap(exception -> Objects.isNull(exception) ? Mono.<Void>empty() : Mono.error(exception))
+        .subscribeOn(Schedulers.boundedElastic());
+    }
+    
+    /**
+     * Проверяет общую память, необходимую для обработки пакета файлов
+     */
+    private Mono<Void> checkTotalMemoryRequirements(List<FileData> files) {
+        return Mono.<InsufficientResourcesException>fromCallable(() -> {
+            long totalSize = files.stream().mapToLong(file -> file.data().length).sum();
+            long estimatedMemoryRequired = (long)(totalSize * estimatedMemoryFactor);
+            
+            Runtime runtime = Runtime.getRuntime();
+            long availableMem = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
+            
+            if (estimatedMemoryRequired > availableMem * 0.8) {
+                log.warn("Insufficient memory for batch processing: need ~{}MB, available {}MB", 
+                    estimatedMemoryRequired / (1024 * 1024), availableMem / (1024 * 1024));
+                return new InsufficientResourcesException(
+                    "Batch is too large to process with current system resources. Try processing fewer or smaller files.");
+            }
+            
+            return null;
+        })
+        .flatMap(exception -> exception == null ? Mono.<Void>empty() : Mono.error(exception))
+        .subscribeOn(Schedulers.boundedElastic());
     }
 }

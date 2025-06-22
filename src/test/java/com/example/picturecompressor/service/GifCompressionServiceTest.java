@@ -4,6 +4,9 @@ import com.example.picturecompressor.exception.FileSizeLimitExceededException;
 import com.example.picturecompressor.exception.InvalidCompressionLevelException;
 import com.example.picturecompressor.exception.InvalidFileTypeException;
 import com.example.picturecompressor.exception.ProcessingException;
+import io.github.resilience4j.reactor.bulkhead.operator.BulkheadOperator;
+import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
+import io.github.resilience4j.reactor.ratelimiter.operator.RateLimiterOperator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -19,6 +22,7 @@ import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.lang.reflect.Field;
+import java.util.function.Function;
 
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -40,9 +44,21 @@ class GifCompressionServiceTest {
     private final byte[] zipData = "mock zip data".getBytes();
 
     @BeforeEach
+    @SuppressWarnings({"unchecked", "rawtypes"})
     void setUp() throws Exception {
+        // Создание мок-объектов для Resilience4j операторов
+        CircuitBreakerOperator<byte[]> circuitBreakerOperator = mock(CircuitBreakerOperator.class);
+        BulkheadOperator<byte[]> bulkheadOperator = mock(BulkheadOperator.class);
+        RateLimiterOperator<byte[]> rateLimiterOperator = mock(RateLimiterOperator.class);
+        
+        // Настройка поведения моков-операторов (просто пропускают значения)
+        when(circuitBreakerOperator.apply(any())).thenAnswer(i -> i.getArgument(0));
+        when(bulkheadOperator.apply(any())).thenAnswer(i -> i.getArgument(0));
+        when(rateLimiterOperator.apply(any())).thenAnswer(i -> i.getArgument(0));
+        
         // Создаем сервис вручную с макетами зависимостей
-        compressionService = new GifCompressionService(gifProcessor, zipCreator);
+        compressionService = new GifCompressionService(gifProcessor, zipCreator, 
+                circuitBreakerOperator, bulkheadOperator, rateLimiterOperator);
 
         // Устанавливаем maxFileSize через рефлексию
         Field field = GifCompressionService.class.getDeclaredField("maxFileSize");

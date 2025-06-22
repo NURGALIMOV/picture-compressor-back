@@ -27,13 +27,51 @@ rate-limiting:
 # GIF compression configuration
 gif-compression:
   max-file-size: 10485760  # 10MB in bytes
+  max-memory-percent: 80   # Максимальный процент используемой памяти
+  estimated-memory-factor: 3.5  # Коэффициент для оценки требуемой памяти
 
 # Actuator configuration
 management:
   endpoints:
     web:
       exposure:
-        include: health
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: always
+      probes:
+        enabled: true
+      group:
+        memory:
+          show-details: always
+    metrics:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles:
+        http.server.requests: 0.5, 0.9, 0.95, 0.99
+        
+# Resilience4j configuration
+resilience4j:
+  circuitbreaker:
+    instances:
+      compressionService:
+        slidingWindowSize: 10
+        permittedNumberOfCallsInHalfOpenState: 5
+        slidingWindowType: COUNT_BASED
+        minimumNumberOfCalls: 5
+        waitDurationInOpenState: 30s
+        failureRateThreshold: 50
+  bulkhead:
+    instances:
+      compressionService:
+        maxConcurrentCalls: 10
+        maxWaitDuration: 5s
+  ratelimiter:
+    instances:
+      compressionService:
+        limitForPeriod: 50
+        limitRefreshPeriod: 1s
+        timeoutDuration: 3s

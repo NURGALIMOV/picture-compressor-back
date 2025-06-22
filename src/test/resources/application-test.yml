@@ -27,3 +27,40 @@ rate-limiting:
 # GIF compression configuration
 gif-compression:
   max-file-size: 209715200  # 200MB in bytes
+  max-memory-percent: 90    # Менее строгое значение для тестов
+  estimated-memory-factor: 3.5
+
+# Actuator configuration for tests
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+
+# Resilience4j configuration for tests
+resilience4j:
+  circuitbreaker:
+    instances:
+      compressionService:
+        slidingWindowSize: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        slidingWindowType: COUNT_BASED
+        minimumNumberOfCalls: 3
+        waitDurationInOpenState: 1s
+        failureRateThreshold: 50
+  bulkhead:
+    instances:
+      compressionService:
+        maxConcurrentCalls: 20
+        maxWaitDuration: 5s
+  ratelimiter:
+    instances:
+      compressionService:
+        limitForPeriod: 100
+        limitRefreshPeriod: 1s
+        timeoutDuration: 3s
