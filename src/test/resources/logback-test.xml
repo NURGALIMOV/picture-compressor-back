@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- Minimal test logging configuration -->
+    <statusListener class="ch.qos.logback.core.status.NopStatusListener" />
+    
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    
+    <!-- Set default log level to OFF for tests -->
+    <root level="OFF">
+        <appender-ref ref="CONSOLE" />
+    </root>
+    
+    <!-- Silences Spring Web during tests -->
+    <logger name="org.springframework" level="OFF"/>
+    <logger name="com.example" level="OFF"/>
+    <logger name="reactor" level="OFF"/>
+</configuration> 

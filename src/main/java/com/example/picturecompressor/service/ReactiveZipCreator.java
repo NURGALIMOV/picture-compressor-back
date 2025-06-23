@@ -2,6 +2,7 @@ package com.example.picturecompressor.service;
 
 import com.example.picturecompressor.exception.ProcessingException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -28,6 +29,9 @@ public class ReactiveZipCreator {
     private static final char DOT_DELIMITER = '.';
     private static final int NOT_FOUND_INDEX = -1;
     private static final int START_COUNT = 1;
+    
+    @Value("${gif-compression.constrained-mode:false}")
+    private boolean constrainedMode;
 
     /**
      * Record representing a ZIP entry
@@ -55,33 +59,50 @@ public class ReactiveZipCreator {
         }
     }
 
-
-    
     /**
-     * Alternative version: Create a ZIP archive reactively with parallel processing
+     * Create a ZIP archive reactively with parallel processing
      *
      * @param entries Flux of ZIP entry data
      * @param parallelism Level of parallelism for processing entries
      * @return Mono containing the ZIP archive as a byte array
      */
     public Mono<byte[]> createZipParallel(Flux<ZipEntryData> entries, int parallelism) {
-        return entries
-            .parallel(parallelism)
-            .runOn(Schedulers.parallel())
-            .map(entry -> entry)
-            .sequential()
-            .collectList()
-            .flatMap(
-                    entryList -> entryList.isEmpty() ?
-                            Mono.error(new ProcessingException("No valid entries provided for ZIP archive")) :
-                            Mono.fromCallable(() -> getBytes(entryList)).subscribeOn(Schedulers.boundedElastic())
-            );
+        // Use appropriate schedulers and processing strategy based on environment
+        if (constrainedMode || parallelism <= 1) {
+            log.debug("Using sequential ZIP processing for constrained mode");
+            return entries
+                .collectList()
+                .flatMap(
+                        entryList -> entryList.isEmpty() ?
+                                Mono.error(new ProcessingException("No valid entries provided for ZIP archive")) :
+                                Mono.fromCallable(() -> getBytes(entryList)).subscribeOn(Schedulers.boundedElastic())
+                );
+        } else {
+            log.debug("Using parallel ZIP processing with concurrency: {}", parallelism);
+            return entries
+                .parallel(parallelism)
+                .runOn(Schedulers.boundedElastic())
+                .map(entry -> entry)
+                .sequential()
+                .collectList()
+                .flatMap(
+                        entryList -> entryList.isEmpty() ?
+                                Mono.error(new ProcessingException("No valid entries provided for ZIP archive")) :
+                                Mono.fromCallable(() -> getBytes(entryList)).subscribeOn(Schedulers.boundedElastic())
+                );
+        }
     }
 
     private byte[] getBytes(List<ZipEntryData> entryList) {
         Set<String> usedFilenames = ConcurrentHashMap.newKeySet();
-        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream(constrainedMode ? 512 * 1024 : 1024 * 1024);
              ZipOutputStream zipOut = new ZipOutputStream(baos)) {
+             
+            // Lower compression level in constrained mode to reduce CPU usage
+            if (constrainedMode) {
+                zipOut.setLevel(1); // Fastest compression
+            }
+             
             boolean hasValidEntries = false;
             for (ZipEntryData entry : entryList) {
                 if (entry.data != null && entry.data.length > 0) {
@@ -92,6 +113,11 @@ public class ReactiveZipCreator {
                     zipOut.write(entry.data);
                     zipOut.closeEntry();
                     log.debug("Added file to ZIP: {}, size: {} bytes", entryName, entry.data.length);
+                    
+                    // Force more frequent GC in constrained mode
+                    if (constrainedMode && entry.data.length > 1024 * 1024) {
+                        System.gc();
+                    }
                 }
             }
             if (!hasValidEntries) {

@@ -1,0 +1,65 @@
+# Configuration for constrained environments (low CPU/RAM)
+spring:
+  webflux:
+    multipart:
+      max-in-memory-size: 2MB
+      max-headers-size: 512KB
+      max-disk-usage-per-part: 5MB
+      max-parts: 3
+  main:
+    lazy-initialization: true
+
+server:
+  compression:
+    enabled: true
+    min-response-size: 1KB
+  # Netty-specific timeout settings
+  netty:
+    connection-timeout: 180s
+  http2:
+    enabled: false
+
+# Rate limiting configuration - reduce for constrained environment
+rate-limiting:
+  requests-per-minute: 3
+
+# GIF compression configuration for constrained environment
+gif-compression:
+  max-file-size: 3145728  # 3MB in bytes
+  max-memory-percent: 65  # Even more conservative memory usage
+  estimated-memory-factor: 3.5
+  # Enable constrained mode
+  constrained-mode: true
+  max-batch-size: 2
+  max-parallel-frames: 1
+
+# Reduced logging in constrained mode
+logging:
+  level:
+    root: WARN
+    com.example.picturecompressor: INFO
+    org.springframework.web: WARN
+    reactor.netty: WARN
+  
+# Resilience4j configuration for constrained environment
+resilience4j:
+  circuitbreaker:
+    instances:
+      compressionService:
+        slidingWindowSize: 8
+        permittedNumberOfCallsInHalfOpenState: 2
+        slidingWindowType: COUNT_BASED
+        minimumNumberOfCalls: 3
+        waitDurationInOpenState: 30s
+        failureRateThreshold: 40
+  bulkhead:
+    instances:
+      compressionService:
+        maxConcurrentCalls: 2
+        maxWaitDuration: 10s
+  ratelimiter:
+    instances:
+      compressionService:
+        limitForPeriod: 5
+        limitRefreshPeriod: 1s
+        timeoutDuration: 5s 

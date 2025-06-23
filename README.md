@@ -11,6 +11,7 @@ A fully non-blocking reactive service for compressing GIF images using Spring We
 - Rate limiting by client IP address
 - Comprehensive error handling
 - Cross-origin resource sharing (CORS) support
+- Support for constrained environments (low CPU/memory)
 
 ## Technology Stack
 
@@ -79,6 +80,29 @@ Parameters:
 
 Rate limiting is implemented using Bucket4j in a non-blocking way. Each client IP has its own rate limit bucket.
 
+### Running in Constrained Environments
+
+The application includes special optimization for running in resource-constrained environments:
+
+- **Constrained Mode**: Enables adaptive processing to reduce resource usage
+  - Sequential processing instead of parallel where appropriate
+  - Reduced memory usage and buffer sizes
+  - More conservative resource allocation
+
+- **Running in Constrained Mode**:
+  ```bash
+  # Using PowerShell script
+  ./run-constrained.ps1
+  
+  # Or using Docker
+  docker run -e CONSTRAINED_MODE=true -p 8080:8080 gif-compression-service
+  ```
+
+- **Constrained Environment Profile**:
+  - Automatically reduce batch sizes
+  - Lower memory footprint
+  - More aggressive resource monitoring
+
 ## Building and Running
 
 ### Prerequisites
@@ -95,13 +119,30 @@ Rate limiting is implemented using Bucket4j in a non-blocking way. Each client I
 ### Run
 
 ```bash
+# Standard mode
 ./mvnw spring-boot:run
+
+# Constrained mode (for limited resources)
+./run-constrained.ps1
 ```
 
 ## Running Tests
 
 ```
 ./mvnw test
+```
+
+## Docker Support
+
+```bash
+# Build docker image
+docker build -t gif-compression-service .
+
+# Run in standard mode
+docker run -p 8080:8080 gif-compression-service
+
+# Run in constrained mode for limited resources
+docker run -e CONSTRAINED_MODE=true -p 8080:8080 gif-compression-service
 ```
 
 ## Built With

@@ -52,6 +52,15 @@ public class GifCompressionService {
     
     @Value("${gif-compression.estimated-memory-factor:3.5}")
     private float estimatedMemoryFactor;
+    
+    @Value("${gif-compression.constrained-mode:false}")
+    private boolean constrainedMode;
+    
+    @Value("${gif-compression.max-batch-size:5}")
+    private int maxBatchSize;
+    
+    @Value("${gif-compression.max-parallel-frames:2}")
+    private int maxParallelFrames;
 
     /**
      * Compresses a single GIF file with the specified compression level
@@ -68,7 +77,15 @@ public class GifCompressionService {
                 .then(collectFileContent(filePart))
                 .doFirst(() -> log.info("Started compressing GIF file: {}", filePart.filename()))
                 .flatMap(bytes -> checkMemoryForProcessing(bytes).then(Mono.just(bytes)))
-                .flatMap(bytes -> gifProcessor.compressGifParallel(bytes, compressionLevel))
+                .flatMap(bytes -> {
+                    // Use different compression strategies depending on environment
+                    if (constrainedMode) {
+                        log.info("Using constrained mode for file: {}", filePart.filename());
+                        return gifProcessor.compressGif(bytes, compressionLevel);
+                    } else {
+                        return gifProcessor.compressGifParallel(bytes, compressionLevel);
+                    }
+                })
                 .doOnError(e -> log.error("Error compressing GIF file: {}", filePart.filename(), e))
                 .doOnSuccess(
                         result -> log.info("Successfully compressed GIF file: {}, output size: {} bytes", filePart.filename(), result.length)
@@ -100,7 +117,16 @@ public class GifCompressionService {
         return GifCompressionValidationService.validateCompressionLevelReactive(compressionLevel)
                 .then(checkSystemResources())
                 .then(processFiles(files))
-                .flatMap(fileDataList -> checkTotalMemoryRequirements(fileDataList).thenReturn(fileDataList))
+                .flatMap(fileDataList -> {
+                    // Enforce batch size limit in constrained mode
+                    if (constrainedMode && fileDataList.size() > maxBatchSize) {
+                        log.warn("Batch size {} exceeds maximum allowed size {} in constrained mode", 
+                                fileDataList.size(), maxBatchSize);
+                        return Mono.error(new InsufficientResourcesException(
+                                "Maximum batch size exceeded. Please reduce the number of files to " + maxBatchSize + " or less."));
+                    }
+                    return checkTotalMemoryRequirements(fileDataList).thenReturn(fileDataList);
+                })
                 .flatMap(fileDataList -> compressFiles(fileDataList, compressionLevel))
                 .flatMap(this::createZipArchive)
                 .doOnError(e -> log.error("Error in batch compression of GIF files", e))
@@ -155,22 +181,44 @@ public class GifCompressionService {
      * Compresses the list of FileData objects with the specified compression level
      */
     private Mono<List<ReactiveZipCreator.ZipEntryData>> compressFiles(List<FileData> fileDataList, float compressionLevel) {
-        return Flux.fromIterable(fileDataList)
-                .flatMap(fileData -> 
-                    gifProcessor.compressGif(fileData.data(), compressionLevel)
-                        .map(compressedData -> new ReactiveZipCreator.ZipEntryData(fileData.filename(), compressedData))
-                        .onErrorResume(e -> {
-                            log.error("Error compressing file: {}. Skipping invalid file", fileData.filename(), e);
-                            return Mono.empty();
-                        })
-                )
-                .collectList()
-                .flatMap(zipEntries -> {
-                    if (zipEntries.isEmpty()) {
-                        return Mono.error(new ProcessingException("No valid files could be compressed"));
-                    }
-                    return Mono.just(zipEntries);
-                });
+        // Use sequential processing for constrained mode to reduce resource usage
+        if (constrainedMode) {
+            log.info("Using sequential compression for batch in constrained mode");
+            return Flux.fromIterable(fileDataList)
+                    .concatMap(fileData -> 
+                        gifProcessor.compressGif(fileData.data(), compressionLevel)
+                            .map(compressedData -> new ReactiveZipCreator.ZipEntryData(fileData.filename(), compressedData))
+                            .onErrorResume(e -> {
+                                log.error("Error compressing file: {}. Skipping invalid file", fileData.filename(), e);
+                                return Mono.empty();
+                            })
+                    )
+                    .collectList()
+                    .flatMap(zipEntries -> {
+                        if (zipEntries.isEmpty()) {
+                            return Mono.error(new ProcessingException("No valid files could be compressed"));
+                        }
+                        return Mono.just(zipEntries);
+                    });
+        } else {
+            // Original parallel processing for normal mode
+            return Flux.fromIterable(fileDataList)
+                    .flatMap(fileData -> 
+                        gifProcessor.compressGif(fileData.data(), compressionLevel)
+                            .map(compressedData -> new ReactiveZipCreator.ZipEntryData(fileData.filename(), compressedData))
+                            .onErrorResume(e -> {
+                                log.error("Error compressing file: {}. Skipping invalid file", fileData.filename(), e);
+                                return Mono.empty();
+                            })
+                    )
+                    .collectList()
+                    .flatMap(zipEntries -> {
+                        if (zipEntries.isEmpty()) {
+                            return Mono.error(new ProcessingException("No valid files could be compressed"));
+                        }
+                        return Mono.just(zipEntries);
+                    });
+        }
     }
 
     /**
@@ -182,7 +230,12 @@ public class GifCompressionService {
         if (validEntries.isEmpty()) {
             return Mono.error(new ProcessingException("No valid data to include in ZIP archive"));
         }
-        return zipCreator.createZipParallel(Flux.fromIterable(validEntries), 4)
+        
+        // Use sequential ZIP creation in constrained mode
+        int parallelism = constrainedMode ? 1 : 4;
+        log.debug("Using parallelism level {} for ZIP creation", parallelism);
+        
+        return zipCreator.createZipParallel(Flux.fromIterable(validEntries), parallelism)
                 .doOnSuccess(zipBytes -> log.info("ZIP archive created successfully, size: {} bytes", zipBytes.length));
     }
     
@@ -283,10 +336,20 @@ public class GifCompressionService {
             log.debug("Memory status: used={}%, available={}MB, max={}MB", 
                 usedMemoryPercent, availableMem / HealthConfig.MB_DIVISOR, maxMem / HealthConfig.MB_DIVISOR);
                 
-            if (usedMemoryPercent > maxMemoryPercent) {
-                log.warn("Low memory resources detected: {}% used (threshold: {}%)", usedMemoryPercent, maxMemoryPercent);
+            // More conservative threshold for constrained environments
+            int effectiveMemoryThreshold = constrainedMode ? maxMemoryPercent - 10 : maxMemoryPercent;
+                
+            if (usedMemoryPercent > effectiveMemoryThreshold) {
+                log.warn("Low memory resources detected: {}% used (threshold: {}%)", usedMemoryPercent, effectiveMemoryThreshold);
                 return new InsufficientResourcesException("Service is low on memory resources. Please try again later.");
             }
+            
+            // Additional check for GC activity in constrained mode
+            if (constrainedMode) {
+                System.gc(); // Request GC run to free memory
+                Thread.sleep(100); // Give GC a moment to run
+            }
+            
             return null;
         })
         .flatMap(exception -> Objects.isNull(exception) ? Mono.<Void>empty() : Mono.error(exception))
@@ -303,9 +366,12 @@ public class GifCompressionService {
             long estimatedMemoryRequired = (long)(fileBytes.length * estimatedMemoryFactor);
             Runtime runtime = Runtime.getRuntime();
             long availableMem = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
+            
+            // Additional safety margin for constrained environments
+            double safetyFactor = constrainedMode ? 0.6 : 0.8;
+            
             // Проверяем, что у нас есть достаточно памяти для обработки файла
-            // с учетом запаса в 20% для других операций
-            if (estimatedMemoryRequired > availableMem * 0.8) {
+            if (estimatedMemoryRequired > availableMem * safetyFactor) {
                 log.warn("Insufficient memory to safely process file: need ~{}MB, available {}MB", 
                     estimatedMemoryRequired / HealthConfig.MB_DIVISOR, availableMem / HealthConfig.MB_DIVISOR);
                 return new InsufficientResourcesException(
@@ -328,7 +394,10 @@ public class GifCompressionService {
             Runtime runtime = Runtime.getRuntime();
             long availableMem = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
             
-            if (estimatedMemoryRequired > availableMem * 0.8) {
+            // Additional safety margin for constrained environments
+            double safetyFactor = constrainedMode ? 0.6 : 0.8;
+            
+            if (estimatedMemoryRequired > availableMem * safetyFactor) {
                 log.warn("Insufficient memory for batch processing: need ~{}MB, available {}MB", 
                     estimatedMemoryRequired / (1024 * 1024), availableMem / (1024 * 1024));
                 return new InsufficientResourcesException(

@@ -4,6 +4,7 @@ import com.example.picturecompressor.exception.ProcessingException;
 import com.madgag.gif.fmsware.AnimatedGifEncoder;
 import com.madgag.gif.fmsware.GifDecoder;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -27,6 +28,12 @@ public class ReactiveGifProcessor {
     private static final int SUCCESS_STATUS = 0;
     private static final int MAX_QUALITY = 1000;
     
+    @Value("${gif-compression.constrained-mode:false}")
+    private boolean constrainedMode;
+    
+    @Value("${gif-compression.max-parallel-frames:2}")
+    private int maxParallelFrames;
+    
     /**
      * Record representing a GIF frame
      */
@@ -46,7 +53,8 @@ public class ReactiveGifProcessor {
      */
     public Mono<byte[]> compressGif(byte[] gifBytes, float compressionLevel) {
         return validateGifBytes(gifBytes)
-            .flatMap(validBytes -> Mono.fromCallable(() -> decodeGif(validBytes)).subscribeOn(Schedulers.boundedElastic()))
+            .flatMap(validBytes -> Mono.fromCallable(() -> decodeGif(validBytes))
+                .subscribeOn(Schedulers.boundedElastic()))
             .flatMap(decodedGif -> processFrames(decodedGif, compressionLevel));
     }
     
@@ -67,7 +75,7 @@ public class ReactiveGifProcessor {
                 throw new ProcessingException("Invalid GIF data: incorrect signature");
             }
             return bytes;
-        }).subscribeOn(Schedulers.parallel());
+        }).subscribeOn(constrainedMode ? Schedulers.boundedElastic() : Schedulers.parallel());
     }
     
     /**
@@ -139,11 +147,16 @@ public class ReactiveGifProcessor {
             .flatMap(decodedGif -> {
                 // Calculate encoder settings
                 int quality = MAX_QUALITY - Math.round(compressionLevel * MAX_QUALITY);
+                
+                // Adaptive parallelism based on environment constraints and frame count
+                int actualParallelFrames = Math.min(maxParallelFrames, Math.min(4, decodedGif.frames.size()));
+                log.debug("Using parallelism of {} for frame processing", actualParallelFrames);
+                
                 // Create a stream of frames for processing
                 return Flux.fromIterable(decodedGif.frames)
                     // Apply backpressure if processing is too fast
-                    .limitRate(4)
-                    .flatMap(frame -> Mono.just(frame).publishOn(Schedulers.parallel()), 4)
+                    .limitRate(actualParallelFrames)
+                    .flatMap(frame -> Mono.just(frame).publishOn(Schedulers.boundedElastic()), actualParallelFrames)
                     .collectList()
                     .flatMap(processedFrames -> Mono.fromCallable(() -> getBytes(decodedGif, quality)).subscribeOn(Schedulers.boundedElastic()));
             });

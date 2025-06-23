@@ -29,6 +29,16 @@ gif-compression:
   max-file-size: 209715200  # 200MB in bytes
   max-memory-percent: 90    # Менее строгое значение для тестов
   estimated-memory-factor: 3.5
+  constrained-mode: false
+  max-batch-size: 10
+  max-parallel-frames: 4
+
+# Disable logging for tests
+logging:
+  level:
+    root: OFF
+    org.springframework: OFF
+    com.example: OFF
 
 # Actuator configuration for tests
 management:

@@ -6,11 +6,11 @@
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <version>3.3.11</version>
-        <relativePath/> <!-- lookup parent from repository -->
+        <relativePath/>
     </parent>
     <groupId>com.example</groupId>
     <artifactId>picture-compressor-back</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>1.0.0</version>
     <name>picture-compressor-back</name>
     <description>GIF image compression service</description>
     
@@ -106,8 +106,6 @@
 
     <dependencyManagement>
         <dependencies>
-            
-            <!-- Fix for Netty vulnerabilities -->
             <dependency>
                 <groupId>io.netty</groupId>
                 <artifactId>netty-codec-http</artifactId>
@@ -123,8 +121,6 @@
                 <artifactId>netty-handler</artifactId>
                 <version>${netty.version}</version>
             </dependency>
-            
-            <!-- Fix for Spring Web vulnerabilities -->
             <dependency>
                 <groupId>org.springframework</groupId>
                 <artifactId>spring-webflux</artifactId>
@@ -165,22 +161,16 @@
                 <artifactId>spring-jcl</artifactId>
                 <version>${spring.version}</version>
             </dependency>
-            
-            <!-- Fix for json-smart vulnerability -->
             <dependency>
                 <groupId>net.minidev</groupId>
                 <artifactId>json-smart</artifactId>
                 <version>${json-smart.version}</version>
             </dependency>
-            
-            <!-- Fix for XMLUnit vulnerability GHSA-chfm-68vv-pvw5 -->
             <dependency>
                 <groupId>org.xmlunit</groupId>
                 <artifactId>xmlunit-core</artifactId>
                 <version>2.10.3</version>
             </dependency>
-            
-            <!-- Fix for logback-core vulnerabilities GHSA-pr98-23f8-jwxv and GHSA-6v67-2wr5-gvf4 -->
             <dependency>
                 <groupId>ch.qos.logback</groupId>
                 <artifactId>logback-core</artifactId>
@@ -215,6 +205,12 @@
                     <useFile>false</useFile>
                     <trimStackTrace>false</trimStackTrace>
                     <useSystemClassLoader>false</useSystemClassLoader>
+                    <systemPropertyVariables>
+                        <logging.level.root>OFF</logging.level.root>
+                        <logging.level.org.springframework>OFF</logging.level.org.springframework>
+                        <spring.main.banner-mode>off</spring.main.banner-mode>
+                        <spring.main.log-startup-info>false</spring.main.log-startup-info>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
         </plugins>
