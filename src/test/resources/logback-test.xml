@@ -18,4 +18,6 @@
     <logger name="org.springframework" level="OFF"/>
     <logger name="com.example" level="OFF"/>
     <logger name="reactor" level="OFF"/>
+
+    <logger name="com.example.picturecompressor" level="OFF" />
 </configuration> 

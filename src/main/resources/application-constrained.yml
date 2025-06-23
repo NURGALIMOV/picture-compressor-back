@@ -35,6 +35,8 @@ gif-compression:
 
 # Reduced logging in constrained mode
 logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
   level:
     root: WARN
     com.example.picturecompressor: INFO

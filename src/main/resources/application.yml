@@ -16,6 +16,11 @@ spring:
     allow-credentials: false
     max-age: 3600
 
+# Logging configuration
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
 server:
   port: 8080
   max-http-request-header-size: 1MB
