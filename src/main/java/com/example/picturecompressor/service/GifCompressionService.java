@@ -26,6 +26,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
+import jakarta.annotation.PostConstruct;
 
 /**
  * Fully non-blocking service for compressing GIF images
@@ -38,6 +39,7 @@ public class GifCompressionService {
     private static final String COMPRESSION_SERVICE = "compressionService";
     private final ReactiveGifProcessor gifProcessor;
     private final ReactiveZipCreator zipCreator;
+    private final GifsicleProcessor gifsicleProcessor;
     
     // Resilience4j operators
     private final CircuitBreakerOperator<byte[]> circuitBreakerOperator;
@@ -59,8 +61,30 @@ public class GifCompressionService {
     @Value("${gif-compression.max-batch-size:5}")
     private int maxBatchSize;
     
-    @Value("${gif-compression.max-parallel-frames:2}")
-    private int maxParallelFrames;
+    @Value("${gifsicle.enabled:false}")
+    private boolean gifsicleEnabled;
+    
+    private boolean gifsicleAvailable = false;
+    
+    @PostConstruct
+    public void init() {
+        // Проверяем доступность gifsicle при старте приложения
+        if (gifsicleEnabled) {
+            gifsicleProcessor.isGifsicleAvailable()
+                .doOnNext(available -> {
+                    gifsicleAvailable = available;
+                    if (Boolean.TRUE.equals(available)) {
+                        log.info("Gifsicle is available and will be used for GIF compression");
+                    } else {
+                        log.warn("Gifsicle is enabled in configuration but not available in the system. " +
+                                "Falling back to Java-based compression.");
+                    }
+                })
+                .subscribe();
+        } else {
+            log.info("Gifsicle is disabled in configuration. Using Java-based compression.");
+        }
+    }
 
     /**
      * Compresses a single GIF file with the specified compression level
@@ -78,13 +102,16 @@ public class GifCompressionService {
                 .doFirst(() -> log.info("Started compressing GIF file: {}", filePart.filename()))
                 .flatMap(bytes -> checkMemoryForProcessing(bytes).then(Mono.just(bytes)))
                 .flatMap(bytes -> {
-                    // Use different compression strategies depending on environment
-                    if (constrainedMode) {
-                        log.info("Using constrained mode for file: {}", filePart.filename());
-                        return gifProcessor.compressGif(bytes, compressionLevel);
-                    } else {
-                        return gifProcessor.compressGifParallel(bytes, compressionLevel);
+                    // Используем gifsicle, если доступен и включен, иначе используем Java-решение
+                    if (gifsicleEnabled && gifsicleAvailable) {
+                        log.info("Using gifsicle for file: {}", filePart.filename());
+                        return gifsicleProcessor.compressGif(bytes, compressionLevel)
+                                .onErrorResume(e -> {
+                                    log.warn("Gifsicle processing failed, falling back to Java implementation: {}", e.getMessage());
+                                    return processWithJava(bytes, compressionLevel);
+                                });
                     }
+                    return processWithJava(bytes, compressionLevel);
                 })
                 .doOnError(e -> log.error("Error compressing GIF file: {}", filePart.filename(), e))
                 .doOnSuccess(
@@ -94,6 +121,18 @@ public class GifCompressionService {
                 .transform(bulkheadOperator)
                 .transform(rateLimiterOperator)
                 .onErrorMap(this::mapResourceErrors);
+    }
+
+    /**
+     * Обрабатывает GIF встроенными средствами Java
+     */
+    private Mono<byte[]> processWithJava(byte[] bytes, float compressionLevel) {
+        if (constrainedMode) {
+            log.info("Using constrained Java mode for GIF compression");
+            return gifProcessor.compressGif(bytes, compressionLevel);
+        } else {
+            return gifProcessor.compressGifParallel(bytes, compressionLevel);
+        }
     }
 
     /**
@@ -118,12 +157,13 @@ public class GifCompressionService {
                 .then(checkSystemResources())
                 .then(processFiles(files))
                 .flatMap(fileDataList -> {
-                    // Enforce batch size limit in constrained mode
                     if (constrainedMode && fileDataList.size() > maxBatchSize) {
-                        log.warn("Batch size {} exceeds maximum allowed size {} in constrained mode", 
-                                fileDataList.size(), maxBatchSize);
-                        return Mono.error(new InsufficientResourcesException(
-                                "Maximum batch size exceeded. Please reduce the number of files to " + maxBatchSize + " or less."));
+                        log.warn("Batch size {} exceeds maximum allowed size {} in constrained mode", fileDataList.size(), maxBatchSize);
+                        return Mono.error(
+                                new InsufficientResourcesException(
+                                        "Maximum batch size exceeded. Please reduce the number of files to " + maxBatchSize + " or less."
+                                )
+                        );
                     }
                     return checkTotalMemoryRequirements(fileDataList).thenReturn(fileDataList);
                 })
@@ -181,44 +221,37 @@ public class GifCompressionService {
      * Compresses the list of FileData objects with the specified compression level
      */
     private Mono<List<ReactiveZipCreator.ZipEntryData>> compressFiles(List<FileData> fileDataList, float compressionLevel) {
-        // Use sequential processing for constrained mode to reduce resource usage
-        if (constrainedMode) {
-            log.info("Using sequential compression for batch in constrained mode");
-            return Flux.fromIterable(fileDataList)
-                    .concatMap(fileData -> 
-                        gifProcessor.compressGif(fileData.data(), compressionLevel)
-                            .map(compressedData -> new ReactiveZipCreator.ZipEntryData(fileData.filename(), compressedData))
-                            .onErrorResume(e -> {
-                                log.error("Error compressing file: {}. Skipping invalid file", fileData.filename(), e);
-                                return Mono.empty();
-                            })
-                    )
-                    .collectList()
-                    .flatMap(zipEntries -> {
-                        if (zipEntries.isEmpty()) {
-                            return Mono.error(new ProcessingException("No valid files could be compressed"));
-                        }
-                        return Mono.just(zipEntries);
-                    });
-        } else {
-            // Original parallel processing for normal mode
-            return Flux.fromIterable(fileDataList)
-                    .flatMap(fileData -> 
-                        gifProcessor.compressGif(fileData.data(), compressionLevel)
-                            .map(compressedData -> new ReactiveZipCreator.ZipEntryData(fileData.filename(), compressedData))
-                            .onErrorResume(e -> {
-                                log.error("Error compressing file: {}. Skipping invalid file", fileData.filename(), e);
-                                return Mono.empty();
-                            })
-                    )
-                    .collectList()
-                    .flatMap(zipEntries -> {
-                        if (zipEntries.isEmpty()) {
-                            return Mono.error(new ProcessingException("No valid files could be compressed"));
-                        }
-                        return Mono.just(zipEntries);
+        return Flux.fromIterable(fileDataList)
+                .flatMap(fileData -> 
+                    compressSingleFile(fileData.data(), compressionLevel)
+                        .map(compressedData -> new ReactiveZipCreator.ZipEntryData(fileData.filename(), compressedData))
+                        .onErrorResume(e -> {
+                            log.error("Error compressing file: {}. Skipping invalid file", fileData.filename(), e);
+                            return Mono.empty();
+                        }),
+                    constrainedMode ? 1 : 4
+                )
+                .collectList()
+                .flatMap(zipEntries -> {
+                    if (zipEntries.isEmpty()) {
+                        return Mono.error(new ProcessingException("No valid files could be compressed"));
+                    }
+                    return Mono.just(zipEntries);
+                });
+    }
+    
+    /**
+     * Сжимает один файл, используя gifsicle или Java-реализацию
+     */
+    private Mono<byte[]> compressSingleFile(byte[] fileData, float compressionLevel) {
+        if (gifsicleEnabled && gifsicleAvailable) {
+            return gifsicleProcessor.compressGif(fileData, compressionLevel)
+                    .onErrorResume(e -> {
+                        log.warn("Gifsicle processing failed, falling back to Java implementation: {}", e.getMessage());
+                        return processWithJava(fileData, compressionLevel);
                     });
         }
+        return processWithJava(fileData, compressionLevel);
     }
 
     /**
@@ -343,13 +376,6 @@ public class GifCompressionService {
                 log.warn("Low memory resources detected: {}% used (threshold: {}%)", usedMemoryPercent, effectiveMemoryThreshold);
                 return new InsufficientResourcesException("Service is low on memory resources. Please try again later.");
             }
-            
-            // Additional check for GC activity in constrained mode
-            if (constrainedMode) {
-                System.gc(); // Request GC run to free memory
-                Thread.sleep(100); // Give GC a moment to run
-            }
-            
             return null;
         })
         .flatMap(exception -> Objects.isNull(exception) ? Mono.<Void>empty() : Mono.error(exception))

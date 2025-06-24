@@ -31,6 +31,11 @@ EXPOSE 8080
 # Copy the built JAR from build stage
 COPY --from=build /app/target/*.jar app.jar
 
+# Установить gifsicle для эффективной обработки GIF-файлов с низким потреблением памяти
+RUN apk update && \
+    apk add --no-cache gifsicle && \
+    rm -rf /var/cache/apk/*
+
 # Switch to non-root user for security
 USER appuser
 

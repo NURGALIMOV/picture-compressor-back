@@ -36,6 +36,9 @@ class GifCompressionServiceTest {
 
     @Mock
     private ReactiveZipCreator zipCreator;
+    
+    @Mock
+    private GifsicleProcessor gifsicleProcessor;
 
     private GifCompressionService compressionService;
 
@@ -57,13 +60,18 @@ class GifCompressionServiceTest {
         when(rateLimiterOperator.apply(any())).thenAnswer(i -> i.getArgument(0));
         
         // Создаем сервис вручную с макетами зависимостей
-        compressionService = new GifCompressionService(gifProcessor, zipCreator, 
+        compressionService = new GifCompressionService(gifProcessor, zipCreator, gifsicleProcessor,
                 circuitBreakerOperator, bulkheadOperator, rateLimiterOperator);
 
         // Устанавливаем maxFileSize через рефлексию
         Field field = GifCompressionService.class.getDeclaredField("maxFileSize");
         field.setAccessible(true);
         field.set(compressionService, 1024 * 1024); // 1MB
+        
+        // Устанавливаем gifsicleEnabled в false для тестов
+        Field gifsicleEnabledField = GifCompressionService.class.getDeclaredField("gifsicleEnabled");
+        gifsicleEnabledField.setAccessible(true);
+        gifsicleEnabledField.set(compressionService, false); // По умолчанию используем Java-реализацию в тестах
 
         // Настраиваем моки
         when(gifProcessor.compressGifParallel(any(byte[].class), anyFloat()))
@@ -71,6 +79,13 @@ class GifCompressionServiceTest {
         
         when(gifProcessor.compressGif(any(byte[].class), anyFloat()))
                 .thenReturn(Mono.just(compressedGif));
+                
+        // Настраиваем мок для gifsicleProcessor
+        when(gifsicleProcessor.compressGif(any(byte[].class), anyFloat()))
+                .thenReturn(Mono.just(compressedGif));
+        
+        when(gifsicleProcessor.isGifsicleAvailable())
+                .thenReturn(Mono.just(true));
 
         // Настраиваем мок zipCreator
         when(zipCreator.createZipParallel(any(Flux.class), anyInt()))
@@ -99,6 +114,29 @@ class GifCompressionServiceTest {
                 .verifyComplete();
         
         verify(gifProcessor).compressGifParallel(any(byte[].class), eq(0.5f));
+    }
+    
+    @Test
+    void testCompressGif_WithGifsicle() throws Exception {
+        // Given
+        Field gifsicleEnabledField = GifCompressionService.class.getDeclaredField("gifsicleEnabled");
+        gifsicleEnabledField.setAccessible(true);
+        gifsicleEnabledField.set(compressionService, true);
+        
+        Field gifsicleAvailableField = GifCompressionService.class.getDeclaredField("gifsicleAvailable");
+        gifsicleAvailableField.setAccessible(true);
+        gifsicleAvailableField.set(compressionService, true);
+        
+        // When
+        Mono<byte[]> result = compressionService.compressGif(mockFilePart, 0.5f);
+        
+        // Then
+        StepVerifier.create(result)
+                .expectNext(compressedGif)
+                .verifyComplete();
+        
+        verify(gifsicleProcessor).compressGif(any(byte[].class), eq(0.5f));
+        verify(gifProcessor, never()).compressGifParallel(any(byte[].class), anyFloat());
     }
 
     @Test

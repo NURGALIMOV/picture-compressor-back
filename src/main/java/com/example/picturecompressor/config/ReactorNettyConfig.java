@@ -44,11 +44,16 @@ public class ReactorNettyConfig {
     
     /**
      * Configure worker threads for Reactor Netty
+     * Обеспечиваем минимально необходимое количество потоков даже для микро-контейнеров
      */
     @Bean
     public LoopResources loopResources() {
-        int workerCount = constrainedMode ? 2 : Runtime.getRuntime().availableProcessors();
-        int selectCount = constrainedMode ? 1 : workerCount / 2;
+        int availableProcessors = Runtime.getRuntime().availableProcessors();
+        
+        // Гарантируем минимально по одному потоку для selectors и workers
+        // даже если Runtime.getRuntime().availableProcessors() возвращает 0 или 1
+        int workerCount = constrainedMode ? 2 : Math.max(2, availableProcessors);
+        int selectCount = constrainedMode ? 1 : Math.max(1, availableProcessors / 2);
         
         return LoopResources.create("reactor-http", selectCount, workerCount, true);
     }

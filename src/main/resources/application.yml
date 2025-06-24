@@ -30,6 +30,13 @@ server:
   http2:
     enabled: false
 
+# SpringDoc/Swagger UI configuration
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
 # Rate limiting configuration - reduce for constrained environment
 rate-limiting:
   requests-per-minute: 5
@@ -40,9 +47,24 @@ gif-compression:
   max-memory-percent: 70  # More conservative memory usage
   estimated-memory-factor: 3.5
   # Add new constrained environment settings
-  constrained-mode: true
+  constrained-mode: false
   max-batch-size: 3
   max-parallel-frames: 2
+
+# Gifsicle configuration - внешняя утилита для сжатия GIF с низким потреблением памяти
+gifsicle:
+  # Путь к исполняемому файлу, по умолчанию предполагается, что он доступен в PATH
+  path: gifsicle
+  # Таймаут выполнения в секундах
+  timeout-seconds: 30
+  # Уровень оптимизации (1-3), где 3 - максимальный
+  optimization-level: 3
+  # Уровень потери качества (0-100), где 0 - без потерь, больше означает больше потерь и меньший размер
+  lossy-level: 30
+  # Использовать ли сжатие с потерями
+  use-lossy: true
+  # Включить Gifsicle как основной процессор (если false, используется как запасной)
+  enabled: true
 
 # Actuator configuration
 management:
