@@ -8,6 +8,6 @@
     </root>
     
     <logger name="org.springframework" level="INFO"/>
-    <logger name="com.example" level="DEBUG"/>
+    <logger name="com.picturecompressor" level="DEBUG"/>
     <logger name="reactor" level="INFO"/>
 </configuration> 
