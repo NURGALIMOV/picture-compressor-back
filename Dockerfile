@@ -16,17 +16,14 @@ FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
 # Set memory limits and GC settings for JVM
-ENV JAVA_OPTS="-Xms256m -Xmx512m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=200"
-ENV JAVA_OPTS_CONSTRAINED="-Xms128m -Xmx384m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=100 -XX:+DisableExplicitGC -Dspring.profiles.active=constrained"
-
-# Optional environment variable to enable constrained mode
-ENV CONSTRAINED_MODE="false"
+ENV JAVA_OPTS="-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=200 -XX:InitialRAMPercentage=25.0 -XX:MaxRAMPercentage=50.0"
 
 # Create non-root user for security
 RUN addgroup --system appuser && adduser --system --ingroup appuser appuser
 
 # Expose port 8080 for the application
 EXPOSE 8080
+EXPOSE 8081
 
 # Copy the built JAR from build stage
 COPY --from=build /app/target/*.jar app.jar

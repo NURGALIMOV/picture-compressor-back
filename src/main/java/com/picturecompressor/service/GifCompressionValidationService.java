@@ -12,11 +12,11 @@ import reactor.core.publisher.Mono;
 @Service
 public class GifCompressionValidationService {
 
+    public static final String SUPPORT_FORMAT = ".gif";
+
     private GifCompressionValidationService() {
         // Private constructor to prevent instantiation
     }
-
-    public static final String SUPPORT_FORMAT = ".gif";
 
     /**
      * Validates that the file is a GIF in a reactive way
@@ -25,12 +25,11 @@ public class GifCompressionValidationService {
      * @return A Mono that completes successfully if the file is valid, or errors with InvalidFileTypeException
      */
     public static Mono<Void> validateFileTypeReactive(FilePart filePart) {
-        return Mono.defer(() -> {
-            String filename = filePart.filename().toLowerCase();
-            return filename.endsWith(SUPPORT_FORMAT) ? 
-                Mono.empty() : 
-                Mono.error(new InvalidFileTypeException("Only GIF files are allowed. Received: " + filename));
-        });
+        String filename = filePart.filename().toLowerCase();
+        if (filename.endsWith(SUPPORT_FORMAT)) {
+            return Mono.empty();
+        }
+        return Mono.error(new InvalidFileTypeException("Only GIF files are allowed. Received: " + filename));
     }
 
     /**
@@ -40,11 +39,8 @@ public class GifCompressionValidationService {
      * @return A Mono that completes successfully if the level is valid, or errors with InvalidCompressionLevelException
      */
     public static Mono<Void> validateCompressionLevelReactive(float compressionLevel) {
-        return Mono.defer(() -> 
-            (compressionLevel >= 0 && compressionLevel <= 1) ? 
-                Mono.empty() : 
-                Mono.error(new InvalidCompressionLevelException("Compression level must be between 0 and 1"))
-        );
+        return (compressionLevel >= 0 && compressionLevel <= 1) ?
+                Mono.empty() : Mono.error(new InvalidCompressionLevelException("Compression level must be between 0 and 1"));
     }
 
     /**
@@ -55,7 +51,6 @@ public class GifCompressionValidationService {
      * @return A Mono that completes successfully if all validations pass, or errors with the appropriate exception
      */
     public static Mono<Void> validateCompressionRequest(FilePart filePart, float compressionLevel) {
-        return validateFileTypeReactive(filePart)
-            .then(validateCompressionLevelReactive(compressionLevel));
+        return validateFileTypeReactive(filePart).then(validateCompressionLevelReactive(compressionLevel));
     }
 }

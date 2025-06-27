@@ -15,9 +15,7 @@ import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.net.InetSocketAddress;
 import java.util.Map;
-import java.util.Optional;
 
 /**
  * Controller for GIF compression API endpoints using fully non-blocking patterns
@@ -28,10 +26,6 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class GifCompressionController {
 
-    private static final String IP_TEMPLATE = "ip:%s";
-    private static final String DEFAULT_IP = "0.0.0.0";
-    private static final String ERROR_MESSAGE = "Rate limit exceeded. Try again later.";
-    private static final int NUM_TOKENS = 1;
     private final GifCompressionService compressionService;
     private final Map<String, Bucket> buckets;
     private final RateLimitConfig rateLimitConfig;
@@ -50,11 +44,12 @@ public class GifCompressionController {
             @RequestParam("compressionLevel") float compressionLevel,
             ServerHttpRequest request
     ) {
-        return Mono.fromCallable(() -> getClientIdentifier(request))
+        return Mono.fromCallable(() -> RateLimitConfig.getClientIdentifier(request))
                 .map(this::getRateLimitBucket)
-                .flatMap(bucket -> bucket.tryConsume(NUM_TOKENS) ?
+                .map(bucket -> bucket.tryConsume(RateLimitConfig.NUM_TOKENS))
+                .flatMap(tryConsume -> tryConsume ?
                         compressionService.compressGif(file, compressionLevel).map(compressedBytes -> createGifResponse(file.filename(), compressedBytes)) :
-                        Mono.error(new RateLimitExceededException(ERROR_MESSAGE))
+                        Mono.error(new RateLimitExceededException(RateLimitConfig.ERROR_MESSAGE))
                 );
     }
 
@@ -72,21 +67,13 @@ public class GifCompressionController {
             @RequestParam("compressionLevel") float compressionLevel,
             ServerHttpRequest request
     ) {
-        return Mono.fromCallable(() -> getClientIdentifier(request))
+        return Mono.fromCallable(() -> RateLimitConfig.getClientIdentifier(request))
                 .map(this::getRateLimitBucket)
-                .flatMap(bucket -> 
-                    bucket.tryConsume(NUM_TOKENS) ? 
-                        compressionService.compressGifBatch(files, compressionLevel)
-                            .map(this::createZipResponse) :
-                        Mono.error(new RateLimitExceededException(ERROR_MESSAGE))
+                .map(bucket -> bucket.tryConsume(RateLimitConfig.NUM_TOKENS))
+                .flatMap(tryConsume -> tryConsume ?
+                        compressionService.compressGifBatch(files, compressionLevel).map(this::createZipResponse) :
+                        Mono.error(new RateLimitExceededException(RateLimitConfig.ERROR_MESSAGE))
                 );
-    }
-
-    private String getClientIdentifier(ServerHttpRequest request) {
-        return Optional.ofNullable(request.getRemoteAddress())
-                .map(InetSocketAddress::getHostString)
-                .map(IP_TEMPLATE::formatted)
-                .orElse(DEFAULT_IP);
     }
 
     /**

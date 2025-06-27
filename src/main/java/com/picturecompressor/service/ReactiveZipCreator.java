@@ -1,20 +1,19 @@
 package com.picturecompressor.service;
 
+import com.picturecompressor.dto.ZipEntryData;
 import com.picturecompressor.exception.ProcessingException;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.io.ByteArrayOutputStream;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -22,42 +21,14 @@ import java.util.zip.ZipOutputStream;
  * Non-blocking ZIP archive creator using reactive patterns
  */
 @Slf4j
-@Component
+@Service
 public class ReactiveZipCreator {
 
     private static final String DELIMITER = "_";
     private static final char DOT_DELIMITER = '.';
     private static final int NOT_FOUND_INDEX = -1;
-    private static final int START_COUNT = 1;
-    
-    @Value("${gif-compression.constrained-mode:false}")
-    private boolean constrainedMode;
+    private static final String DEFAULT_FILENAME = "file";
 
-    /**
-     * Record representing a ZIP entry
-     */
-    public record ZipEntryData(String filename, byte[] data) {
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-            ZipEntryData that = (ZipEntryData) o;
-            return Objects.deepEquals(data, that.data) && Objects.equals(filename, that.filename);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(filename, Arrays.hashCode(data));
-        }
-
-        @Override
-        public String toString() {
-            return "ZipEntryData{" +
-                    "filename='" + filename + '\'' +
-                    ", data=" + Arrays.toString(data) +
-                    '}';
-        }
-    }
 
     /**
      * Create a ZIP archive reactively with parallel processing
@@ -67,58 +38,39 @@ public class ReactiveZipCreator {
      * @return Mono containing the ZIP archive as a byte array
      */
     public Mono<byte[]> createZipParallel(Flux<ZipEntryData> entries, int parallelism) {
-        // Use appropriate schedulers and processing strategy based on environment
-        if (constrainedMode || parallelism <= 1) {
-            log.debug("Using sequential ZIP processing for constrained mode");
-            return entries
-                .collectList()
-                .flatMap(
-                        entryList -> entryList.isEmpty() ?
-                                Mono.error(new ProcessingException("No valid entries provided for ZIP archive")) :
-                                Mono.fromCallable(() -> getBytes(entryList)).subscribeOn(Schedulers.boundedElastic())
-                );
-        } else {
-            log.debug("Using parallel ZIP processing with concurrency: {}", parallelism);
-            return entries
-                .parallel(parallelism)
+        log.debug("Using parallel ZIP processing with concurrency: {}", parallelism);
+        return entries.parallel(parallelism)
                 .runOn(Schedulers.boundedElastic())
-                .map(entry -> entry)
                 .sequential()
                 .collectList()
                 .flatMap(
                         entryList -> entryList.isEmpty() ?
                                 Mono.error(new ProcessingException("No valid entries provided for ZIP archive")) :
-                                Mono.fromCallable(() -> getBytes(entryList)).subscribeOn(Schedulers.boundedElastic())
+                                Mono.fromCallable(() -> createZipBytes(entryList)).subscribeOn(Schedulers.boundedElastic())
                 );
-        }
     }
 
-    private byte[] getBytes(List<ZipEntryData> entryList) {
+    /**
+     * Forms an array of byte ZIP archive.
+     */
+    private byte[] createZipBytes(List<ZipEntryData> entryList) {
         Set<String> usedFilenames = ConcurrentHashMap.newKeySet();
-        try (ByteArrayOutputStream baos = new ByteArrayOutputStream(constrainedMode ? 512 * 1024 : 1024 * 1024);
+        boolean hasValidEntries = false;
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream(GifCompressionService.ONE_MEGA_BYTE);
              ZipOutputStream zipOut = new ZipOutputStream(baos)) {
-             
-            // Lower compression level in constrained mode to reduce CPU usage
-            if (constrainedMode) {
-                zipOut.setLevel(1); // Fastest compression
-            }
-             
-            boolean hasValidEntries = false;
             for (ZipEntryData entry : entryList) {
-                if (entry.data != null && entry.data.length > 0) {
-                    hasValidEntries = true;
-                    String entryName = generateUniqueFilename(entry.filename, usedFilenames);
-                    ZipEntry zipEntry = new ZipEntry(entryName);
-                    zipOut.putNextEntry(zipEntry);
-                    zipOut.write(entry.data);
-                    zipOut.closeEntry();
-                    log.debug("Added file to ZIP: {}, size: {} bytes", entryName, entry.data.length);
-                    
-                    // Force more frequent GC in constrained mode
-                    if (constrainedMode && entry.data.length > 1024 * 1024) {
-                        System.gc();
-                    }
+                byte[] data = entry.data();
+                if (Objects.isNull(data) || data.length == 0) {
+                    log.warn("Skipping empty or null data for entry: {}", entry.filename());
+                    continue;
                 }
+                hasValidEntries = true;
+                String entryName = generateUniqueFilename(entry.filename(), usedFilenames);
+                ZipEntry zipEntry = new ZipEntry(entryName);
+                zipOut.putNextEntry(zipEntry);
+                zipOut.write(data);
+                zipOut.closeEntry();
+                log.debug("Added file to ZIP: {}, size: {} bytes", entryName, data.length);
             }
             if (!hasValidEntries) {
                 throw new ProcessingException("No valid data to include in ZIP archive");
@@ -145,18 +97,15 @@ public class ReactiveZipCreator {
      * @return Unique filename
      */
     private String generateUniqueFilename(String filename, Set<String> usedFilenames) {
-        String entryName = filename;
-        AtomicInteger counter = new AtomicInteger(START_COUNT);
-        while (usedFilenames.contains(entryName)) {
-            int extIndex = filename.lastIndexOf(DOT_DELIMITER);
-            int count = counter.getAndIncrement();
-            if (extIndex == NOT_FOUND_INDEX) {
-                entryName = filename + DELIMITER + count;
-            } else {
-                entryName = filename.substring(0, extIndex) + DELIMITER + count + filename.substring(extIndex);
-            }
+        String name = StringUtils.isNoneBlank(filename) ? filename : DEFAULT_FILENAME;
+        int extIndex = name.lastIndexOf(DOT_DELIMITER);
+        String base = (extIndex == NOT_FOUND_INDEX) ? name : name.substring(0, extIndex);
+        String ext = (extIndex == NOT_FOUND_INDEX) ? StringUtils.EMPTY : name.substring(extIndex);
+        int count = 1;
+        String candidate = name;
+        while (!usedFilenames.add(candidate)) {
+            candidate = base + DELIMITER + (count++) + ext;
         }
-        usedFilenames.add(entryName);
-        return entryName;
+        return candidate;
     }
 } 

@@ -8,7 +8,7 @@
         <version>3.3.11</version>
         <relativePath/>
     </parent>
-    <groupId>com.example</groupId>
+    <groupId>com.picturecompressor</groupId>
     <artifactId>picture-compressor-back</artifactId>
     <version>1.0.0</version>
     <name>picture-compressor-back</name>
@@ -29,10 +29,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
         
         <!-- Spring Boot Actuator for health checks -->
@@ -58,13 +54,6 @@
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-reactor</artifactId>
             <version>${resilience4j.version}</version>
-        </dependency>
-        
-        <!-- GIF Processing -->
-        <dependency>
-            <groupId>com.madgag</groupId>
-            <artifactId>animated-gif-lib</artifactId>
-            <version>1.4</version>
         </dependency>
         
         <!-- Reactive IO -->

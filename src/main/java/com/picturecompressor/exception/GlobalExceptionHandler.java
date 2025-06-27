@@ -37,6 +37,12 @@ public class GlobalExceptionHandler {
         return createErrorResponse(ex, exchange, HttpStatus.PAYLOAD_TOO_LARGE);
     }
 
+    @ExceptionHandler(ProcessingException.class)
+    public ResponseEntity<ApiError> handleProcessingException(ProcessingException ex, ServerWebExchange exchange) {
+        log.error("Processing error: {}", ex.getMessage());
+        return createErrorResponse(ex, exchange, HttpStatus.BAD_REQUEST);
+    }
+
     @ExceptionHandler(RateLimitExceededException.class)
     public ResponseEntity<ApiError> handleRateLimitExceededException(RateLimitExceededException ex, ServerWebExchange exchange) {
         log.error("Rate limit exceeded: {}", ex.getMessage());
